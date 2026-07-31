@@ -4,6 +4,14 @@ import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as Y from 'yjs'
 import { archiveExpiredSession } from './archive.js'
+import {
+	MAX_AWARENESS_MESSAGE_BYTES,
+	MAX_MARKDOWN_BYTES,
+	MAX_WEBSOCKET_MESSAGE_BYTES,
+	MAX_YJS_SNAPSHOT_BYTES,
+	exceedsUtf8ByteLimit,
+	utf8ByteLength,
+} from '../shared/limits.js'
 import type {
 	AppEnv,
 	PendingAsset,
@@ -56,8 +64,10 @@ type SqlAssetRow = {
 }
 
 export class EditingSession extends DurableObject<AppEnv> {
-	private readonly doc = new Y.Doc()
-	private readonly text = this.doc.getText('markdown')
+	private doc = new Y.Doc()
+	private text = this.doc.getText('markdown')
+	private applyingRemoteUpdate = false
+	private pendingRemoteUpdates: Uint8Array[] = []
 	private deleted = false
 
 	constructor(ctx: DurableObjectState, env: AppEnv) {
@@ -68,13 +78,7 @@ export class EditingSession extends DurableObject<AppEnv> {
 			if (rows[0]?.data) {
 				Y.applyUpdate(this.doc, new Uint8Array(rows[0].data), 'restore')
 			}
-			this.doc.on('update', (update: Uint8Array) => {
-				this.persistSnapshot()
-				const encoder = encoding.createEncoder()
-				encoding.writeVarUint(encoder, MESSAGE_SYNC)
-				syncProtocol.writeUpdate(encoder, update)
-				this.broadcast(encoding.toUint8Array(encoder))
-			})
+			this.doc.on('update', this.handleDocumentUpdate)
 			const meta = this.getMeta()
 			if (meta && (await this.ctx.storage.getAlarm()) === null) {
 				await this.ctx.storage.setAlarm(Date.parse(meta.expiresAt))
@@ -123,8 +127,7 @@ export class EditingSession extends DurableObject<AppEnv> {
 		}
 	}
 
-	private persistSnapshot(): void {
-		const snapshot = Y.encodeStateAsUpdate(this.doc)
+	private persistSnapshot(snapshot = Y.encodeStateAsUpdate(this.doc)): void {
 		this.ctx.storage.sql.exec(
 			`INSERT INTO snapshot (id, data, updated_at)
 			 VALUES (1, ?, ?)
@@ -132,6 +135,42 @@ export class EditingSession extends DurableObject<AppEnv> {
 			snapshot,
 			new Date().toISOString(),
 		)
+	}
+
+	private getStoredSnapshot(): Uint8Array {
+		const rows = [
+			...this.ctx.storage.sql.exec<{ data: ArrayBuffer }>(
+				'SELECT data FROM snapshot WHERE id = 1',
+			),
+		]
+		return rows[0]?.data
+			? new Uint8Array(rows[0].data).slice()
+			: new Uint8Array()
+	}
+
+	private replaceDocument(snapshot: Uint8Array): void {
+		this.doc.off('update', this.handleDocumentUpdate)
+		this.doc.destroy()
+		this.doc = new Y.Doc()
+		this.text = this.doc.getText('markdown')
+		if (snapshot.byteLength) Y.applyUpdate(this.doc, snapshot, 'restore')
+		this.doc.on('update', this.handleDocumentUpdate)
+	}
+
+	private broadcastDocumentUpdate(update: Uint8Array): void {
+		const encoder = encoding.createEncoder()
+		encoding.writeVarUint(encoder, MESSAGE_SYNC)
+		syncProtocol.writeUpdate(encoder, update)
+		this.broadcast(encoding.toUint8Array(encoder))
+	}
+
+	private readonly handleDocumentUpdate = (update: Uint8Array): void => {
+		if (this.applyingRemoteUpdate) {
+			this.pendingRemoteUpdates.push(update)
+			return
+		}
+		this.persistSnapshot()
+		this.broadcastDocumentUpdate(update)
 	}
 
 	private getMeta(): SessionMeta | null {
@@ -145,7 +184,6 @@ export class EditingSession extends DurableObject<AppEnv> {
 			Pick<
 				SessionMeta,
 				| 'id'
-				| 'demo'
 				| 'repository'
 				| 'baseBranch'
 				| 'documentPath'
@@ -155,7 +193,8 @@ export class EditingSession extends DurableObject<AppEnv> {
 				| 'createdBy'
 				| 'status'
 				| 'pullRequestUrl'
-			>
+			> & { demo?: unknown }
+		delete raw.demo
 		const retentionDays = RETENTION_DAYS.has(
 			raw.retentionDays as SessionRetentionDays,
 		)
@@ -396,6 +435,27 @@ export class EditingSession extends DurableObject<AppEnv> {
 				)
 			}
 
+			const positions: number[] = []
+			if (asset.markdownPath !== markdownPath) {
+				const current = this.text.toString()
+				let position = current.indexOf(asset.markdownPath)
+				while (position !== -1) {
+					positions.push(position)
+					position = current.indexOf(
+						asset.markdownPath,
+						position + asset.markdownPath.length,
+					)
+				}
+				const nextSize =
+					utf8ByteLength(current) +
+					positions.length *
+						(utf8ByteLength(markdownPath) -
+							utf8ByteLength(asset.markdownPath))
+				if (nextSize > MAX_MARKDOWN_BYTES) {
+					return this.json({ error: 'Markdown files must not exceed 2 MB' }, 413)
+				}
+			}
+
 			this.ctx.storage.sql.exec(
 				`UPDATE assets
 				 SET final_path = ?, markdown_path = ?
@@ -405,25 +465,13 @@ export class EditingSession extends DurableObject<AppEnv> {
 				asset.id,
 			)
 
-			if (asset.markdownPath !== markdownPath) {
-				const current = this.text.toString()
-				const positions: number[] = []
-				let position = current.indexOf(asset.markdownPath)
-				while (position !== -1) {
-					positions.push(position)
-					position = current.indexOf(
-						asset.markdownPath,
-						position + asset.markdownPath.length,
-					)
-				}
-				if (positions.length) {
-					this.doc.transact(() => {
-						for (const index of positions.reverse()) {
-							this.text.delete(index, asset.markdownPath.length)
-							this.text.insert(index, markdownPath)
-						}
-					}, 'asset-rename')
-				}
+			if (positions.length) {
+				this.doc.transact(() => {
+					for (const index of positions.reverse()) {
+						this.text.delete(index, asset.markdownPath.length)
+						this.text.insert(index, markdownPath)
+					}
+				}, 'asset-rename')
 			}
 
 			const renamed = {
@@ -504,16 +552,18 @@ export class EditingSession extends DurableObject<AppEnv> {
 			if (!Number.isSafeInteger(clientId) || clientId < 0) {
 				return this.json({ error: 'Invalid client ID' }, 400)
 			}
+			const githubId = Number(request.headers.get('X-User-Id'))
+			const login = request.headers.get('X-User-Login')
+			const name = request.headers.get('X-User-Name')
+			const avatarUrl = request.headers.get('X-User-Avatar')
+			if (!Number.isSafeInteger(githubId) || !login || !name || !avatarUrl) {
+				return this.json({ error: 'Missing authenticated user context' }, 401)
+			}
 			const participant: SessionParticipant = {
-				id: request.headers.get('X-User-Id')
-					? Number(request.headers.get('X-User-Id'))
-					: null,
-				login: request.headers.get('X-User-Login') ?? `guest-${clientId}`,
-				name:
-					request.headers.get('X-User-Name') ??
-					request.headers.get('X-User-Login') ??
-					'Guest',
-				avatarUrl: request.headers.get('X-User-Avatar'),
+				id: githubId,
+				login,
+				name,
+				avatarUrl,
 				commitEmail: request.headers.get('X-User-Email'),
 				lastSeenAt: new Date().toISOString(),
 			}
@@ -562,7 +612,7 @@ export class EditingSession extends DurableObject<AppEnv> {
 			let archive:
 				| { branch: string; branchUrl: string; commitSha: string }
 				| undefined
-			if (!meta.demo) {
+			if (meta.repository && meta.baseBranch) {
 				archive = await archiveExpiredSession(this.env, session)
 			}
 			await Promise.all(
@@ -570,7 +620,7 @@ export class EditingSession extends DurableObject<AppEnv> {
 					this.env.ASSET_BUCKET.delete(asset.r2Key),
 				),
 			)
-			if (!meta.demo) {
+			if (meta.repository && meta.baseBranch) {
 				await this.env.SESSION_REGISTRY.getByName('global').fetch(
 					`https://registry/sessions/${meta.id}/delete`,
 					{ method: 'DELETE' },
@@ -614,21 +664,125 @@ export class EditingSession extends DurableObject<AppEnv> {
 	webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
 		if (typeof message === 'string') return
 		const bytes = new Uint8Array(message)
-		const decoder = decoding.createDecoder(bytes)
-		const messageType = decoding.readVarUint(decoder)
-
-		if (messageType === MESSAGE_SYNC) {
-			const reply = encoding.createEncoder()
-			encoding.writeVarUint(reply, MESSAGE_SYNC)
-			syncProtocol.readSyncMessage(decoder, reply, this.doc, socket)
-			if (encoding.length(reply) > 1 && socket.readyState === WebSocket.OPEN) {
-				socket.send(encoding.toUint8Array(reply))
-			}
+		if (bytes.byteLength > MAX_WEBSOCKET_MESSAGE_BYTES) {
+			this.closeSocketWithError(
+				socket,
+				'WebSocket messages must not exceed 8 MB',
+				1009,
+			)
 			return
 		}
 
-		if (messageType === MESSAGE_AWARENESS) {
-			this.broadcast(bytes, socket)
+		let previousSnapshot: Uint8Array | null = null
+		try {
+			const decoder = decoding.createDecoder(bytes)
+			const messageType = decoding.readVarUint(decoder)
+
+			if (messageType === MESSAGE_SYNC) {
+				const inspection = decoding.createDecoder(bytes)
+				decoding.readVarUint(inspection)
+				const syncMessageType = decoding.readVarUint(inspection)
+				const mayMutate =
+					syncMessageType === syncProtocol.messageYjsSyncStep2 ||
+					syncMessageType === syncProtocol.messageYjsUpdate
+				if (mayMutate) previousSnapshot = this.getStoredSnapshot()
+
+				const reply = encoding.createEncoder()
+				encoding.writeVarUint(reply, MESSAGE_SYNC)
+				this.applyingRemoteUpdate = mayMutate
+				this.pendingRemoteUpdates = []
+				try {
+					syncProtocol.readSyncMessage(
+						decoder,
+						reply,
+						this.doc,
+						socket,
+						(error) => {
+							throw error
+						},
+					)
+				} finally {
+					this.applyingRemoteUpdate = false
+				}
+
+				if (this.pendingRemoteUpdates.length) {
+					const snapshot = Y.encodeStateAsUpdate(this.doc)
+					const markdownTooLarge =
+						this.text.length > MAX_MARKDOWN_BYTES ||
+						(this.text.length > Math.floor(MAX_MARKDOWN_BYTES / 3) &&
+							exceedsUtf8ByteLimit(
+								this.text.toString(),
+								MAX_MARKDOWN_BYTES,
+							))
+					const snapshotTooLarge =
+						snapshot.byteLength > MAX_YJS_SNAPSHOT_BYTES
+					if (markdownTooLarge || snapshotTooLarge) {
+						this.replaceDocument(previousSnapshot ?? new Uint8Array())
+						this.pendingRemoteUpdates = []
+						this.closeSocketWithError(
+							socket,
+							markdownTooLarge
+								? 'Markdownは2 MBまでです。直前の変更は保存されませんでした。'
+								: '共同編集データが8 MiBを超えました。直前の変更は保存されませんでした。',
+							4009,
+						)
+						return
+					}
+					this.persistSnapshot(snapshot)
+					for (const update of this.pendingRemoteUpdates) {
+						this.broadcastDocumentUpdate(update)
+					}
+					this.pendingRemoteUpdates = []
+				}
+
+				if (encoding.length(reply) > 1 && socket.readyState === WebSocket.OPEN) {
+					const replyBytes = encoding.toUint8Array(reply)
+					if (replyBytes.byteLength > MAX_WEBSOCKET_MESSAGE_BYTES) {
+						this.closeSocketWithError(
+							socket,
+							'The document synchronization state exceeds 8 MB',
+							1009,
+						)
+						return
+					}
+					socket.send(replyBytes)
+				}
+				return
+			}
+
+			if (messageType === MESSAGE_AWARENESS) {
+				if (bytes.byteLength > MAX_AWARENESS_MESSAGE_BYTES) {
+					this.closeSocketWithError(
+						socket,
+						'Awareness messages must not exceed 64 KiB',
+						1009,
+					)
+					return
+				}
+				decoding.readVarUint8Array(decoder)
+				this.broadcast(bytes, socket)
+				return
+			}
+
+			throw new Error('Unknown WebSocket message type')
+		} catch {
+			this.applyingRemoteUpdate = false
+			this.pendingRemoteUpdates = []
+			if (previousSnapshot) this.replaceDocument(previousSnapshot)
+			this.closeSocketWithError(socket, 'Invalid collaboration message', 4002)
+		}
+	}
+
+	private closeSocketWithError(
+		socket: WebSocket,
+		message: string,
+		code: number,
+	): void {
+		try {
+			socket.send(JSON.stringify({ type: 'error', message }))
+			socket.close(code, message.slice(0, 120))
+		} catch {
+			// The runtime will discard stale sockets.
 		}
 	}
 

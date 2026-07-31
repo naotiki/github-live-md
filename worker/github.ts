@@ -1,4 +1,6 @@
 import type { AppEnv, GitHubUser } from './types.js'
+import { ApiError, readJsonBody } from './http.js'
+import { MAX_JSON_BODY_BYTES } from '../shared/limits.js'
 
 const GITHUB_API_VERSION = '2026-03-10'
 const COMMIT_EMAIL_MAX_AGE = 60 * 60 * 24 * 365
@@ -13,21 +15,6 @@ type GitHubEmail = {
 export type CommitEmailOption = GitHubEmail & {
 	kind: 'github' | 'noreply'
 	recommended: boolean
-}
-
-export class ApiError extends Error {
-	readonly status: number
-	readonly details?: unknown
-
-	constructor(
-		message: string,
-		status: number,
-		details?: unknown,
-	) {
-		super(message)
-		this.status = status
-		this.details = details
-	}
 }
 
 export async function githubRequest<T>(
@@ -279,7 +266,10 @@ export async function handleAuth(request: Request, env: AppEnv, pathname: string
 		if (!token) throw new ApiError('GitHub login required', 401)
 		const user = await getGitHubUser(request)
 		if (!user) throw new ApiError('GitHub session expired', 401)
-		const payload = (await request.json()) as { email?: unknown }
+		const payload = await readJsonBody<{ email?: unknown }>(
+			request,
+			MAX_JSON_BODY_BYTES,
+		)
 		if (typeof payload.email !== 'string') {
 			throw new ApiError('メールアドレスを選択してください', 400)
 		}

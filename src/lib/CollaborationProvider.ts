@@ -16,7 +16,6 @@ export class CollaborationProvider {
 	private readonly sessionId: string
 	readonly doc: Y.Doc
 	readonly awareness: awarenessProtocol.Awareness
-	private readonly guestName: string
 	private socket: WebSocket | null = null
 	private destroyed = false
 	private reconnectTimer: number | null = null
@@ -27,17 +26,16 @@ export class CollaborationProvider {
 	private readonly assetRemovalListeners = new Set<(assetId: string) => void>()
 	private readonly settingsListeners = new Set<(meta: SessionMeta) => void>()
 	private readonly deletionListeners = new Set<(reason: string) => void>()
+	private readonly errorListeners = new Set<(message: string) => void>()
 
 	constructor(
 		sessionId: string,
 		doc: Y.Doc,
 		awareness: awarenessProtocol.Awareness,
-		guestName: string,
 	) {
 		this.sessionId = sessionId
 		this.doc = doc
 		this.awareness = awareness
-		this.guestName = guestName
 		this.doc.on('update', this.onDocumentUpdate)
 		this.awareness.on('update', this.onAwarenessUpdate)
 		this.connect()
@@ -69,6 +67,11 @@ export class CollaborationProvider {
 		return () => this.deletionListeners.delete(listener)
 	}
 
+	onError(listener: (message: string) => void): () => void {
+		this.errorListeners.add(listener)
+		return () => this.errorListeners.delete(listener)
+	}
+
 	destroy(): void {
 		this.destroyed = true
 		this.doc.off('update', this.onDocumentUpdate)
@@ -92,7 +95,6 @@ export class CollaborationProvider {
 			`${protocol}//${window.location.host}/api/sessions/${this.sessionId}/connect`,
 		)
 		url.searchParams.set('clientId', String(this.doc.clientID))
-		url.searchParams.set('name', this.guestName)
 		const socket = new WebSocket(url)
 		socket.binaryType = 'arraybuffer'
 		this.socket = socket
@@ -120,7 +122,13 @@ export class CollaborationProvider {
 			if (this.socket === socket) this.socket = null
 			if (this.destroyed) return
 			this.setStatus('disconnected')
-			if (event.code === 4003 || event.code === 4004) return
+			if (
+				event.code === 1009 ||
+				event.code === 4002 ||
+				event.code === 4003 ||
+				event.code === 4004 ||
+				event.code === 4009
+			) return
 			const delay = Math.min(1_000 * 2 ** this.reconnectAttempt, 10_000)
 			this.reconnectAttempt += 1
 			this.reconnectTimer = window.setTimeout(() => this.connect(), delay)
@@ -212,6 +220,7 @@ export class CollaborationProvider {
 				assetId?: string
 				meta?: SessionMeta
 				reason?: string
+				message?: string
 			}
 			if (payload.type === 'asset' && payload.asset) {
 				for (const listener of this.assetListeners) listener(payload.asset)
@@ -231,6 +240,10 @@ export class CollaborationProvider {
 				for (const listener of this.deletionListeners) {
 					listener(payload.reason ?? 'Session deleted')
 				}
+				return
+			}
+			if (payload.type === 'error' && payload.message) {
+				for (const listener of this.errorListeners) listener(payload.message)
 			}
 		} catch {
 			// Ignore control messages from an incompatible client version.

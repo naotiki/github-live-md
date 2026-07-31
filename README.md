@@ -2,8 +2,6 @@
 
 GitHub上のMarkdown 1ファイルを、複数人でリアルタイム共同編集するためのMVPです。本文とアップロード画像をコミットへまとめ、参加者を `Co-authored-by` に入れたDraft Pull Requestを作成します。PR作成後も同じセッションから追加コミットできます。
 
-GitHub未設定でも「デモを試す」から共同編集・プレビュー・画像アップロードをローカルで確認できます。
-
 ## 実装済み
 
 - GitHub AppのWeb application flowによるログイン
@@ -33,6 +31,8 @@ GitHub未設定でも「デモを試す」から共同編集・プレビュー�
 - Pull Requestのmerge webhookによるセッション自動削除
 - セッション開始後に対象Markdownが更新された場合の競合検出
 - 非公開リポジトリへの参加者ごとのGitHubアクセス確認
+- 全セッションでGitHubログインとリポジトリアクセスを必須化
+- Markdown本文2 MB、Yjs/WebSocket 8 MiB、HTTP本文種別ごとのサイズ制限
 
 ## 構成
 
@@ -68,7 +68,25 @@ pnpm install
 pnpm dev
 ```
 
-`http://localhost:5173` を開きます。ローカルのR2とDurable ObjectはWranglerがエミュレートするため、デモにCloudflareアカウントは不要です。
+`http://localhost:5173` を開きます。ローカルのR2とDurable ObjectはWranglerが
+エミュレートします。セッションを作成・参加するには、ローカル環境でもGitHub Appの
+設定とGitHubログインが必要です。
+
+## 入力サイズ制限
+
+Workerのメモリ使用量と共同編集セッションの肥大化を抑えるため、次の上限を設けています。
+
+| 入力 | 上限 |
+|---|---:|
+| Markdown本文（UTF-8） | 2,000,000 bytes |
+| Yjsスナップショット / WebSocketメッセージ | 8 MiB |
+| Awarenessメッセージ | 64 KiB |
+| JSONリクエスト本文 | 32 KiB |
+| 画像multipart本文 | 11 MiB（画像ファイル自体は10 MiB） |
+| GitHub webhook本文 | 2 MiB |
+
+Markdown上限を超えるエディタ操作はクライアントで止め、サーバー側でもYjs更新の適用後に
+再検証します。制限超過時は直前の正常なスナップショットを維持し、画面へ理由を表示します。
 
 ### GitHub URLから直接開く
 

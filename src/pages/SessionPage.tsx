@@ -98,10 +98,6 @@ const PRESENCE_COLORS = [
 	['#ff7ab6', '#ff7ab622'],
 ]
 
-function guestName(): string {
-	return localStorage.getItem('livemd.guestName') ?? 'Guest editor'
-}
-
 function storedEditorColorScheme(): EditorColorScheme {
 	const stored = localStorage.getItem('livemd.editorColorScheme')
 	return EDITOR_COLOR_SCHEMES.some((scheme) => scheme.value === stored)
@@ -268,7 +264,7 @@ function EditorWorkspace({
 		const colorIndex = doc.clientID % PRESENCE_COLORS.length
 		const [color, colorLight] = PRESENCE_COLORS[colorIndex]
 		return {
-			name: auth.user?.name?.trim() || auth.user?.login || guestName(),
+			name: auth.user?.name?.trim() || auth.user?.login || 'GitHub user',
 			login: auth.user?.login,
 			avatarUrl: auth.user?.avatar_url,
 			color,
@@ -277,7 +273,7 @@ function EditorWorkspace({
 	}, [auth.user, doc.clientID])
 
 	useEffect(() => {
-		if (auth.user && !auth.commitEmail) return
+		if (!auth.user || !auth.commitEmail) return
 		// Restore a complete local state after a provider cleanup as well as on first mount.
 		// Awareness#setLocalStateField is intentionally a no-op when the local state is null.
 		awareness.setLocalState({ user: identity })
@@ -285,7 +281,6 @@ function EditorWorkspace({
 			meta.id,
 			doc,
 			awareness,
-			identity.name,
 		)
 		const unsubscribe = provider.onStatus(setConnection)
 		const unsubscribeAssets = provider.onAsset((asset) => {
@@ -313,6 +308,9 @@ function EditorWorkspace({
 			setAssets((current) => current.filter((asset) => asset.id !== assetId))
 		})
 		const unsubscribeSettings = provider.onSettings(setMeta)
+		const unsubscribeErrors = provider.onError((message) => {
+			setNotice({ kind: 'error', message })
+		})
 		const unsubscribeDeleted = provider.onDeleted((reason) => {
 			setNotice({
 				kind: 'error',
@@ -328,6 +326,7 @@ function EditorWorkspace({
 			unsubscribeAssets()
 			unsubscribeAssetRemovals()
 			unsubscribeSettings()
+			unsubscribeErrors()
 			unsubscribeDeleted()
 			provider.destroy()
 		}
@@ -418,6 +417,13 @@ function EditorWorkspace({
 		if (!changed) pendingEditorScrollRef.current = null
 	}, [bothPanesVisible])
 
+	const showDocumentLimit = useCallback(() => {
+		setNotice({
+			kind: 'error',
+			message: 'Markdownは2 MBまでです。上限を超える変更は保存されません。',
+		})
+	}, [])
+
 	const uploadImages = useCallback(async (files: File[]) => {
 		if (!files.length) return
 		setUploading(true)
@@ -425,11 +431,7 @@ function EditorWorkspace({
 		let uploaded = 0
 		try {
 			for (const file of files) {
-				const asset = await client.uploadAsset(
-					meta.id,
-					file,
-					identity.name,
-				)
+				const asset = await client.uploadAsset(meta.id, file)
 				setAssets((current) =>
 					current.some((item) => item.id === asset.id)
 						? current
@@ -461,7 +463,6 @@ function EditorWorkspace({
 			if (fileInputRef.current) fileInputRef.current.value = ''
 		}
 	}, [
-		identity.name,
 		meta.id,
 	])
 
@@ -518,15 +519,9 @@ function EditorWorkspace({
 			<header className="editor-header">
 				<Brand />
 				<div className="document-crumb">
-					{meta.repository ? (
-						<>
-							<GithubLogo size={15} />
-							<span>{meta.repository}</span>
-							<i>/</i>
-						</>
-					) : (
-						<span className="demo-label">DEMO</span>
-					)}
+					<GithubLogo size={15} />
+					<span>{meta.repository}</span>
+					<i>/</i>
 					<b>{meta.documentPath}</b>
 				</div>
 				<div className="editor-header-actions">
@@ -561,33 +556,24 @@ function EditorWorkspace({
 						Assets
 						<b>{assets.length}</b>
 					</button>
-					{meta.demo ? (
-						<button className="button editor-pr-button" disabled>
-							<GitPullRequestArrow size={16} />
-							Demo session
-						</button>
-					) : (
-						<>
-							{pullRequestUrl && (
-								<a
-									className="button editor-pr-button success"
-									href={pullRequestUrl}
-									target="_blank"
-									rel="noreferrer"
-								>
-									<ExternalLink size={15} />
-									Open PR
-								</a>
-							)}
-							<button
-								className="button editor-pr-button"
-								onClick={() => setPublishOpen(true)}
-							>
-								<GitPullRequestArrow size={16} />
-								{pullRequestUrl ? 'Add commit' : 'Create PR'}
-							</button>
-						</>
+					{pullRequestUrl && (
+						<a
+							className="button editor-pr-button success"
+							href={pullRequestUrl}
+							target="_blank"
+							rel="noreferrer"
+						>
+							<ExternalLink size={15} />
+							Open PR
+						</a>
 					)}
+					<button
+						className="button editor-pr-button"
+						onClick={() => setPublishOpen(true)}
+					>
+						<GitPullRequestArrow size={16} />
+						{pullRequestUrl ? 'Add commit' : 'Create PR'}
+					</button>
 				</div>
 			</header>
 
@@ -723,6 +709,7 @@ function EditorWorkspace({
 						readOnly={readOnly}
 						onPasteImages={uploadImages}
 						onScrollProgress={syncPreviewFromEditor}
+						onDocumentLimitExceeded={showDocumentLimit}
 						colorScheme={editorColorScheme}
 					/>
 					<EditorToc
@@ -968,7 +955,7 @@ function ShareDialog({
 				</div>
 
 				<div className="share-settings">
-					<fieldset disabled={!canManage || meta.demo}>
+					<fieldset disabled={!canManage}>
 						<legend>参加できるユーザー</legend>
 						<label className={accessPolicy === 'link' ? 'selected' : ''}>
 							<input
@@ -1011,7 +998,7 @@ function ShareDialog({
 							<CalendarClock size={16} className="field-icon" />
 							<select
 								value={retentionDays}
-								disabled={!canManage || meta.demo}
+								disabled={!canManage}
 								onChange={(event) =>
 									setRetentionDays(
 										Number(event.target.value) as SessionRetentionDays,
@@ -1030,13 +1017,13 @@ function ShareDialog({
 						</small>
 					</label>
 
-					{!canManage && !meta.demo && (
+					{!canManage && (
 						<p className="share-owner-note">
 							共有範囲と保存期間を変更できるのはセッション作成者だけです。
 						</p>
 					)}
 
-					{canManage && !meta.demo && (
+					{canManage && (
 						<div className="session-delete-zone">
 							<div>
 								<b>セッションを削除</b>
@@ -1087,7 +1074,7 @@ function ShareDialog({
 						<button className="button button-secondary" onClick={onClose}>
 							閉じる
 						</button>
-						{canManage && !meta.demo && (
+						{canManage && (
 							<button
 								className="button button-primary"
 								onClick={() => void save()}

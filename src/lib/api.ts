@@ -81,12 +81,6 @@ export const client = {
 			`/api/github/markdown-files?repository=${encodeURIComponent(repository)}&branch=${encodeURIComponent(branch)}`,
 		),
 
-	createDemoSession: (guestName: string, retentionDays: SessionRetentionDays = 14) =>
-		api<{ session: SessionMeta; reused: boolean }>('/api/sessions', {
-			method: 'POST',
-			body: JSON.stringify({ demo: true, guestName, retentionDays }),
-		}),
-
 	createGitHubSession: (
 		repository: string,
 		branch: string,
@@ -111,11 +105,9 @@ export const client = {
 	uploadAsset: async (
 		sessionId: string,
 		file: File,
-		guestName: string,
 	): Promise<PendingAsset> => {
 		const form = new FormData()
 		form.set('file', file)
-		if (guestName) form.set('guestName', guestName)
 		const result = await api<{ asset: PendingAsset }>(
 			`/api/sessions/${sessionId}/assets`,
 			{ method: 'POST', body: form },

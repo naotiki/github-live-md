@@ -113,13 +113,6 @@
 	background: #e8ece5;
 }
 
-.button-light {
-	color: var(--ink);
-	background: #fff;
-	border-color: rgb(255 255 255 / 70%);
-	box-shadow: 0 12px 30px rgb(42 60 30 / 20%);
-}
-
 .button-full {
 	width: 100%;
 }
@@ -849,12 +842,11 @@
 
 .start-grid {
 	display: grid;
-	grid-template-columns: 1.45fr 0.75fr;
+	grid-template-columns: minmax(0, 1fr);
 	gap: 18px;
 }
 
-.session-card,
-.demo-card {
+.session-card {
 	min-height: 390px;
 	border-radius: 12px;
 }
@@ -889,16 +881,14 @@
 	font-weight: 800;
 }
 
-.card-heading h3,
-.demo-card h3 {
+.card-heading h3 {
 	margin: 1px 0 4px;
 	color: #253020;
 	font-size: 15px;
 	letter-spacing: -0.25px;
 }
 
-.card-heading p,
-.demo-card > p {
+.card-heading p {
 	margin: 0;
 	color: #818a7d;
 	font-size: 10px;
@@ -910,7 +900,6 @@
 }
 
 .source-form label,
-.demo-card label,
 .dialog-form label {
 	display: flex;
 	flex-direction: column;
@@ -918,7 +907,6 @@
 }
 
 .source-form label > span,
-.demo-card label > span,
 .dialog-form label > span {
 	color: #697365;
 	font-family: ui-monospace, monospace;
@@ -930,7 +918,6 @@
 
 .source-form input,
 .source-form select,
-.demo-card input,
 .dialog-form input,
 .dialog-form textarea {
 	width: 100%;
@@ -946,7 +933,6 @@
 
 .source-form input:focus,
 .source-form select:focus,
-.demo-card input:focus,
 .dialog-form input:focus,
 .dialog-form textarea:focus {
 	border-color: #92c85b;
@@ -1100,85 +1086,6 @@
 
 .config-notice code {
 	font-weight: 800;
-}
-
-.demo-card {
-	padding: 27px;
-	color: #f1f5ee;
-	background:
-		radial-gradient(circle at 88% 9%, rgb(183 243 107 / 18%), transparent 29%),
-		#1a2118;
-	border: 1px solid #2d392a;
-	box-shadow: 0 18px 42px rgb(32 45 25 / 17%);
-}
-
-.demo-card-top {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	margin-bottom: 28px;
-}
-
-.step-number.inverted {
-	color: var(--green-bright);
-	background: #273322;
-	border-color: #3c4b36;
-}
-
-.demo-pill {
-	padding: 4px 7px;
-	color: #9fab99;
-	background: #242c22;
-	border: 1px solid #364033;
-	border-radius: 4px;
-	font-family: ui-monospace, monospace;
-	font-size: 7px;
-	font-weight: 800;
-	letter-spacing: 1px;
-}
-
-.demo-card h3 {
-	color: #f1f5ee;
-	font-size: 19px;
-}
-
-.demo-card > p {
-	max-width: 330px;
-	margin-top: 7px;
-	color: #9aa495;
-	font-size: 11px;
-}
-
-.demo-card label {
-	margin-top: 27px;
-}
-
-.demo-card label > span {
-	color: #9ca696;
-}
-
-.demo-card input {
-	color: #eaf0e6;
-	background: #222a20;
-	border-color: #364033;
-}
-
-.demo-users {
-	display: flex;
-	align-items: center;
-	gap: 11px;
-	margin: 21px 0;
-	color: #8f9b89;
-	font-size: 9px;
-}
-
-.stacked-avatars {
-	display: flex;
-	padding-left: 4px;
-}
-
-.stacked-avatars .avatar {
-	border-color: #1a2118;
 }
 
 .inline-error {
@@ -1458,17 +1365,6 @@
 .document-crumb i {
 	color: #bdc5b8;
 	font-style: normal;
-}
-
-.demo-label {
-	padding: 3px 5px;
-	color: #628c33;
-	background: #eaf5df;
-	border-radius: 3px;
-	font-family: ui-monospace, monospace;
-	font-size: 7px;
-	font-weight: 850;
-	letter-spacing: 0.8px;
 }
 
 .editor-header-actions {
@@ -3359,21 +3255,18 @@
 }
 
 .card-heading p,
-.demo-card > p,
 .auth-empty p {
 	font-size: 13px;
 }
 
 .step-number,
 .source-form label > span,
-.demo-card label > span,
 .dialog-form label > span {
 	font-size: 11px;
 }
 
 .source-form input,
 .source-form select,
-.demo-card input,
 .dialog-form input,
 .dialog-form textarea {
 	font-size: 14px;
@@ -3388,15 +3281,10 @@
 }
 
 .config-notice,
-.demo-users,
 .feature-card small,
 .security-strip > a,
 .site-footer {
 	font-size: 11px;
-}
-
-.demo-pill {
-	font-size: 9px;
 }
 
 .feature-card h3 {
@@ -3421,7 +3309,6 @@
 	font-size: 12px;
 }
 
-.demo-label,
 .connection-chip,
 .presence-stack img,
 .presence-stack > span {
@@ -3514,10 +3401,6 @@
 
 	.sessions-grid {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-	}
-
-	.demo-card {
-		min-height: 330px;
 	}
 
 	.feature-grid {
@@ -3713,8 +3596,7 @@
 		font-size: 25px;
 	}
 
-	.session-card,
-	.demo-card {
+	.session-card {
 		padding: 21px;
 	}
 

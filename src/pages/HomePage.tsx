@@ -12,7 +12,6 @@ import {
 	LogOut,
 	LoaderCircle,
 	Mail,
-	Sparkles,
 	Users,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -32,10 +31,6 @@ type HomePageProps = {
 	onEmailSettings: () => void
 }
 
-function initialGuestName(): string {
-	return localStorage.getItem('livemd.guestName') ?? 'Markdown explorer'
-}
-
 function expiryLabel(expiresAt: string): string {
 	return new Intl.DateTimeFormat('ja-JP', {
 		month: 'short',
@@ -53,13 +48,12 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 	const [branch, setBranch] = useState('')
 	const [files, setFiles] = useState<string[]>([])
 	const [path, setPath] = useState('')
-	const [guestName, setGuestName] = useState(initialGuestName)
 	const [retentionDays, setRetentionDays] =
 		useState<SessionRetentionDays>(14)
 	const [loadingRepos, setLoadingRepos] = useState(false)
 	const [loadingSessions, setLoadingSessions] = useState(false)
 	const [loadingTarget, setLoadingTarget] = useState(false)
-	const [creating, setCreating] = useState<'demo' | 'github' | null>(null)
+	const [creating, setCreating] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 
 	useEffect(() => {
@@ -141,22 +135,9 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 			.finally(() => setLoadingTarget(false))
 	}, [auth.user, branch, repository])
 
-	const createDemo = async () => {
-		setCreating('demo')
-		setError(null)
-		localStorage.setItem('livemd.guestName', guestName.trim() || 'Markdown explorer')
-		try {
-			const { session } = await client.createDemoSession(guestName, 14)
-			window.location.assign(`/session/${session.id}`)
-		} catch (caught) {
-			setError(caught instanceof Error ? caught.message : 'デモを開始できませんでした')
-			setCreating(null)
-		}
-	}
-
 	const createGitHub = async () => {
 		if (!repository || !branch || !path.trim()) return
-		setCreating('github')
+		setCreating(true)
 		setError(null)
 		try {
 			const { session } = await client.createGitHubSession(
@@ -172,7 +153,7 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 					? caught.message
 					: '共同編集セッションを開始できませんでした',
 			)
-			setCreating(null)
+			setCreating(false)
 		}
 	}
 
@@ -214,7 +195,7 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 							Sign in
 						</a>
 					) : (
-						<span className="nav-local">Local demo</span>
+						<span className="nav-local">GitHub App未設定</span>
 					)}
 				</nav>
 			</header>
@@ -252,14 +233,6 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 									GitHub Appは未設定
 								</button>
 							)}
-							<button
-								className="button button-secondary"
-								onClick={() => void createDemo()}
-								disabled={creating !== null}
-							>
-								<Sparkles size={17} />
-								{creating === 'demo' ? '準備中…' : 'デモを試す'}
-							</button>
 						</div>
 						<div className="hero-proof">
 							<span><Check size={14} /> Yjs CRDT</span>
@@ -490,9 +463,9 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 									<button
 										className="button button-primary button-full"
 										onClick={() => void createGitHub()}
-										disabled={!repository || !branch || !path.trim() || creating !== null}
+										disabled={!repository || !branch || !path.trim() || creating}
 									>
-										{creating === 'github' ? '読み込み中…' : '共同編集を開始'}
+										{creating ? '読み込み中…' : '共同編集を開始'}
 										<ArrowRight size={17} />
 									</button>
 								</div>
@@ -514,39 +487,6 @@ export function HomePage({ auth, onAuthChanged, onEmailSettings }: HomePageProps
 									)}
 								</div>
 							)}
-						</div>
-
-						<div className="demo-card">
-							<div className="demo-card-top">
-								<span className="step-number inverted">00</span>
-								<span className="demo-pill">NO LOGIN</span>
-							</div>
-							<h3>まず共同編集だけ試す</h3>
-							<p>GitHubへの書き込みなしで、別タブとのリアルタイム同期を確認できます。</p>
-							<label>
-								<span>表示名</span>
-								<input
-									value={guestName}
-									onChange={(event) => setGuestName(event.target.value)}
-									maxLength={50}
-								/>
-							</label>
-							<div className="demo-users">
-								<div className="stacked-avatars">
-									<span className="avatar avatar-green">Y</span>
-									<span className="avatar avatar-purple">C</span>
-									<span className="avatar avatar-orange">R</span>
-								</div>
-								<span>共有リンクを開くだけで参加</span>
-							</div>
-							<button
-								className="button button-light button-full"
-								onClick={() => void createDemo()}
-								disabled={creating !== null}
-							>
-								<Sparkles size={17} />
-								{creating === 'demo' ? 'セッション準備中…' : 'デモセッションを作る'}
-							</button>
 						</div>
 					</div>
 					{error && <div className="inline-error" role="alert">{error}</div>}

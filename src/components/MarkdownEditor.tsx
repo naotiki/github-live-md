@@ -14,6 +14,7 @@ import { yCollab } from 'y-codemirror.next'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import type { EditorColorScheme } from '../lib/editorColorSchemes'
+import { exceedsUtf8ByteLimit, MAX_MARKDOWN_BYTES } from '../lib/limits'
 
 export type MarkdownEditorHandle = {
 	wrapSelection: (before: string, after?: string) => void
@@ -29,6 +30,7 @@ type MarkdownEditorProps = {
 	readOnly?: boolean
 	onPasteImages?: (files: File[]) => void
 	onScrollProgress?: (progress: number) => void
+	onDocumentLimitExceeded?: () => void
 	colorScheme: EditorColorScheme
 }
 
@@ -213,6 +215,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 			readOnly = false,
 			onPasteImages,
 			onScrollProgress,
+			onDocumentLimitExceeded,
 			colorScheme,
 		},
 		ref,
@@ -225,6 +228,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 		useEffect(() => {
 			if (!parentRef.current) return
 			const undoManager = new Y.UndoManager(text)
+			let lastLimitNoticeAt = 0
 			const state = EditorState.create({
 				doc: text.toString(),
 				extensions: [
@@ -235,6 +239,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 						editorExtensions(initialColorSchemeRef.current),
 					),
 					EditorState.readOnly.of(readOnly),
+					EditorState.transactionFilter.of((transaction) => {
+						if (!transaction.docChanged) return transaction
+						const nextDocument = transaction.newDoc
+						if (nextDocument.length <= Math.floor(MAX_MARKDOWN_BYTES / 3)) {
+							return transaction
+						}
+						if (
+							!exceedsUtf8ByteLimit(
+								nextDocument.toString(),
+								MAX_MARKDOWN_BYTES,
+							)
+						) return transaction
+						const now = Date.now()
+						if (now - lastLimitNoticeAt > 1_000) {
+							lastLimitNoticeAt = now
+							onDocumentLimitExceeded?.()
+						}
+						return []
+					}),
 					yCollab(text, awareness, { undoManager }),
 					EditorView.domEventHandlers({
 						paste(event) {
@@ -275,7 +298,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 				view.destroy()
 				undoManager.destroy()
 			}
-		}, [awareness, onPasteImages, onScrollProgress, readOnly, text])
+		}, [
+			awareness,
+			onDocumentLimitExceeded,
+			onPasteImages,
+			onScrollProgress,
+			readOnly,
+			text,
+		])
 
 		useEffect(() => {
 			const view = viewRef.current

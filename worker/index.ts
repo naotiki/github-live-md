@@ -1,9 +1,7 @@
 import {
-	ApiError,
 	arrayBufferToBase64,
 	decodeBase64Utf8,
 	encodeGitHubPath,
-	getCommitEmailSelection,
 	getGitHubToken,
 	getGitHubUser,
 	githubNoReplyEmail,
@@ -12,6 +10,19 @@ import {
 	isGitHubConfigured,
 	resolveCommitEmail,
 } from './github.js'
+import {
+	ApiError,
+	readJsonBody,
+	readMultipartFormData,
+	readRequestBody,
+} from './http.js'
+import {
+	MAX_IMAGE_UPLOAD_BODY_BYTES,
+	MAX_JSON_BODY_BYTES,
+	MAX_MARKDOWN_BYTES,
+	MAX_WEBHOOK_BODY_BYTES,
+	utf8ByteLength,
+} from '../shared/limits.js'
 import { isAutomaticArchiveConfigured } from './archive.js'
 import { SessionRegistry } from './registry.js'
 import { EditingSession } from './session.js'
@@ -36,7 +47,7 @@ type SessionState = {
 }
 
 type SessionAccess = {
-	user: GitHubUser | null
+	user: GitHubUser
 	commitEmail: string | null
 	canWrite: boolean
 }
@@ -57,29 +68,6 @@ type GitHubCommit = {
 	tree: { sha: string }
 }
 
-const DEMO_MARKDOWN = `---
-title: "共同編集デモ"
-date: ${new Date().toISOString().slice(0, 10)}
-tags:
-  - writeup
----
-
-# Hack the docs, together.
-
-この文章は **GitHub Live MD** の共同編集デモです。
-
-## 今日わかったこと
-
-- 複数人のカーソルがリアルタイムに表示されます
-- Markdownを編集すると右側のプレビューが追従します
-- 画像は一時保存され、PR作成時に本文と同じコミットへ入ります
-
-\`\`\`ts
-const collaboration = "fast, focused, reviewable";
-\`\`\`
-
-> 共有URLを別ウィンドウで開くと、共同編集をすぐ試せます。
-`
 const DAY_MS = 24 * 60 * 60 * 1_000
 const RETENTION_DAYS = new Set<SessionRetentionDays>([7, 14, 21, 28])
 
@@ -299,13 +287,8 @@ async function ensureSessionAccess(
 	request: Request,
 	state: SessionState,
 ): Promise<SessionAccess> {
-	if (state.meta.demo) {
-		const user = await getGitHubUser(request)
-		return {
-			user,
-			commitEmail: user ? getCommitEmailSelection(request, user) : null,
-			canWrite: true,
-		}
+	if (!state.meta.repository || !state.meta.baseBranch) {
+		throw new ApiError('This session type is no longer supported', 410)
 	}
 	const { token, user } = await requireGitHub(request)
 	const repository = await githubRequest<RepositoryAccess>(
@@ -442,15 +425,13 @@ async function handleGitHubApi(request: Request, pathname: string): Promise<Resp
 
 async function createSession(request: Request, env: AppEnv): Promise<Response> {
 	if (request.method !== 'POST') throw new ApiError('Method not allowed', 405)
-	const payload = (await request.json()) as {
-		demo?: boolean
+	const payload = await readJsonBody<{
 		repository?: string
 		branch?: string
 		path?: string
-		guestName?: string
 		retentionDays?: number
 		accessPolicy?: 'link' | 'write'
-	}
+	}>(request, MAX_JSON_BODY_BYTES)
 	const id = crypto.randomUUID()
 	const retentionDays = requireRetentionDays(payload.retentionDays)
 	const createdAt = new Date()
@@ -458,36 +439,75 @@ async function createSession(request: Request, env: AppEnv): Promise<Response> {
 		createdAt.getTime() + retentionDays * DAY_MS,
 	).toISOString()
 
+	const { token, user } = await requireGitHub(request)
+	const commitEmail = await resolveCommitEmail(request, token, user)
+	const repository = requireRepository(payload.repository)
+	const branch = requireBranch(payload.branch)
+	const documentPath = requireRepositoryPath(payload.path, true)
+	const accessPolicy = payload.accessPolicy === 'write' ? 'write' : 'link'
+	await requireRepositoryWriteAccess(token, repository)
+	const targetKey = [repository.toLowerCase(), branch, documentPath].join('\n')
+	const reservation = await registryStub(env).fetch('https://registry/reserve', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			id,
+			ownerId: user.id,
+			ownerLogin: user.login,
+			repository,
+			baseBranch: branch,
+			documentPath,
+			createdAt: createdAt.toISOString(),
+			expiresAt,
+			status: 'editing',
+			accessPolicy,
+			pullRequestUrl: null,
+			pullRequestNumber: null,
+			pullRequestBranch: null,
+			lastPublishedCommitSha: null,
+			targetKey,
+		}),
+	})
+	if (!reservation.ok) {
+		throw new ApiError('Could not reserve the editing session', reservation.status)
+	}
+	const reserved = (await reservation.json()) as {
+		created: boolean
+		session: SessionRegistryEntry
+	}
+	if (!reserved.created) {
+		return Response.json({
+			session: { id: reserved.session.id },
+			reused: true,
+		})
+	}
+
 	let meta: SessionMeta
 	let markdown: string
 	let participant: SessionParticipant
-
-	if (payload.demo) {
-		const guestName = cleanText(payload.guestName, 'Demo editor', 50)
-		const login = `guest-${crypto.randomUUID().slice(0, 8)}`
-		participant = {
-			id: null,
-			login,
-			name: guestName,
-			avatarUrl: null,
-			commitEmail: null,
-			lastSeenAt: new Date().toISOString(),
+	try {
+		const [{ commitSha }, file] = await Promise.all([
+			getBranchTip(token, repository, branch),
+			readMarkdownFile(token, repository, branch, documentPath),
+		])
+		markdown = file.markdown
+		if (utf8ByteLength(markdown) > MAX_MARKDOWN_BYTES) {
+			throw new ApiError('Markdown files must not exceed 2 MB', 413)
 		}
-		markdown = DEMO_MARKDOWN
+		participant = participantFromUser(user, commitEmail)
 		meta = {
 			id,
-			demo: true,
-			repository: null,
-			baseBranch: null,
-			documentPath: 'writeups/collaboration-demo.md',
-			baseCommitSha: null,
-			baseBlobSha: null,
+			repository,
+			baseBranch: branch,
+			documentPath,
+			baseCommitSha: commitSha,
+			baseBlobSha: file.blobSha,
 			createdAt: createdAt.toISOString(),
 			createdBy: {
-				id: null,
-				login,
-				name: guestName,
-				avatarUrl: null,
+				id: user.id,
+				login: user.login,
+				name: cleanText(user.name, user.login, 100),
+				avatarUrl: user.avatar_url,
 			},
 			status: 'editing',
 			pullRequestUrl: null,
@@ -495,102 +515,17 @@ async function createSession(request: Request, env: AppEnv): Promise<Response> {
 			pullRequestBranch: null,
 			lastPublishedCommitSha: null,
 			publishedAssetPaths: [],
-			assetDirectory: defaultAssetDirectory('writeups/collaboration-demo.md'),
-			accessPolicy: 'link',
+			assetDirectory: defaultAssetDirectory(documentPath),
+			accessPolicy,
 			retentionDays,
 			expiresAt,
 		}
-	} else {
-		const { token, user } = await requireGitHub(request)
-		const commitEmail = await resolveCommitEmail(request, token, user)
-		const repository = requireRepository(payload.repository)
-		const branch = requireBranch(payload.branch)
-		const documentPath = requireRepositoryPath(payload.path, true)
-		const accessPolicy = payload.accessPolicy === 'write' ? 'write' : 'link'
-		await requireRepositoryWriteAccess(token, repository)
-		const targetKey = [
-			repository.toLowerCase(),
-			branch,
-			documentPath,
-		].join('\n')
-		const reservation = await registryStub(env).fetch(
-			'https://registry/reserve',
-			{
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					id,
-					ownerId: user.id,
-					ownerLogin: user.login,
-					repository,
-					baseBranch: branch,
-					documentPath,
-					createdAt: createdAt.toISOString(),
-					expiresAt,
-					status: 'editing',
-					accessPolicy,
-					pullRequestUrl: null,
-					pullRequestNumber: null,
-					pullRequestBranch: null,
-					lastPublishedCommitSha: null,
-					targetKey,
-				}),
-			},
+	} catch (error) {
+		await registryStub(env).fetch(
+			`https://registry/sessions/${id}/release`,
+			{ method: 'DELETE' },
 		)
-		if (!reservation.ok) {
-			throw new ApiError('Could not reserve the editing session', reservation.status)
-		}
-		const reserved = (await reservation.json()) as {
-			created: boolean
-			session: SessionRegistryEntry
-		}
-		if (!reserved.created) {
-			return Response.json({
-				session: { id: reserved.session.id },
-				reused: true,
-			})
-		}
-
-		try {
-			const [{ commitSha }, file] = await Promise.all([
-				getBranchTip(token, repository, branch),
-				readMarkdownFile(token, repository, branch, documentPath),
-			])
-			markdown = file.markdown
-			participant = participantFromUser(user, commitEmail)
-			meta = {
-				id,
-				demo: false,
-				repository,
-				baseBranch: branch,
-				documentPath,
-				baseCommitSha: commitSha,
-				baseBlobSha: file.blobSha,
-				createdAt: createdAt.toISOString(),
-				createdBy: {
-					id: user.id,
-					login: user.login,
-					name: cleanText(user.name, user.login, 100),
-					avatarUrl: user.avatar_url,
-				},
-				status: 'editing',
-				pullRequestUrl: null,
-				pullRequestNumber: null,
-				pullRequestBranch: null,
-				lastPublishedCommitSha: null,
-				publishedAssetPaths: [],
-				assetDirectory: defaultAssetDirectory(documentPath),
-				accessPolicy,
-				retentionDays,
-				expiresAt,
-			}
-		} catch (error) {
-			await registryStub(env).fetch(
-				`https://registry/sessions/${id}/release`,
-				{ method: 'DELETE' },
-			)
-			throw error
-		}
+		throw error
 	}
 
 	const response = await sessionStub(env, id).fetch('https://session/init', {
@@ -599,12 +534,10 @@ async function createSession(request: Request, env: AppEnv): Promise<Response> {
 		body: JSON.stringify({ meta, markdown, participant }),
 	})
 	if (!response.ok) {
-		if (!meta.demo) {
-			await registryStub(env).fetch(
-				`https://registry/sessions/${id}/release`,
-				{ method: 'DELETE' },
-			)
-		}
+		await registryStub(env).fetch(
+			`https://registry/sessions/${id}/release`,
+			{ method: 'DELETE' },
+		)
 		throw new ApiError('Could not initialize the editing session', response.status)
 	}
 
@@ -717,10 +650,10 @@ async function uploadAsset(
 	env: AppEnv,
 	sessionId: string,
 	state: SessionState,
-	user: GitHubUser | null,
+	user: GitHubUser,
 ): Promise<Response> {
 	if (request.method !== 'POST') throw new ApiError('Method not allowed', 405)
-	const form = await request.formData()
+	const form = await readMultipartFormData(request, MAX_IMAGE_UPLOAD_BODY_BYTES)
 	const file = form.get('file')
 	if (!(file instanceof File)) throw new ApiError('An image file is required', 400)
 	if (file.size <= 0 || file.size > 10 * 1024 * 1024) {
@@ -738,7 +671,7 @@ async function uploadAsset(
 	)
 	const markdownPath = relativeRepositoryPath(documentDirectory, finalPath)
 	const r2Key = `sessions/${sessionId}/${id}`
-	const uploadedBy = user?.login ?? cleanText(form.get('guestName'), 'guest', 50)
+	const uploadedBy = user.login
 	const asset: PendingAsset = {
 		id,
 		finalPath,
@@ -833,7 +766,10 @@ async function renameAsset(
 	if (request.method !== 'PATCH') throw new ApiError('Method not allowed', 405)
 	const asset = state.assets.find((item) => item.id === assetId)
 	if (!asset) throw new ApiError('Image not found', 404)
-	const payload = (await request.json()) as { fileName?: unknown }
+	const payload = await readJsonBody<{ fileName?: unknown }>(
+		request,
+		MAX_JSON_BODY_BYTES,
+	)
 	const fileName = requireAssetFileName(payload.fileName, asset.mimeType)
 	const separator = asset.finalPath.lastIndexOf('/')
 	const directory =
@@ -879,7 +815,10 @@ async function updateAssetDirectory(
 	state: SessionState,
 ): Promise<Response> {
 	if (request.method !== 'PATCH') throw new ApiError('Method not allowed', 405)
-	const payload = (await request.json()) as { directory?: unknown }
+	const payload = await readJsonBody<{ directory?: unknown }>(
+		request,
+		MAX_JSON_BODY_BYTES,
+	)
 	const assetDirectory = resolveAssetDirectory(
 		state.meta.documentPath,
 		payload.directory,
@@ -938,8 +877,8 @@ async function publishSession(
 	const commitEmail = await resolveCommitEmail(request, token, user)
 	const session = await fetchSessionExport(env, sessionId)
 	const { meta } = session
-	if (meta.demo || !meta.repository || !meta.baseBranch) {
-		throw new ApiError('Demo sessions cannot create a pull request', 400)
+	if (!meta.repository || !meta.baseBranch) {
+		throw new ApiError('This session cannot create a pull request', 400)
 	}
 	await requireRepositoryWriteAccess(token, meta.repository)
 	const isFollowUp = meta.status === 'published'
@@ -1010,11 +949,11 @@ async function publishSession(
 		}
 	}
 
-	const payload = (await request.json()) as {
+	const payload = await readJsonBody<{
 		title?: string
 		description?: string
 		commitMessage?: string
-	}
+	}>(request, MAX_JSON_BODY_BYTES)
 	const defaultTitle = `${meta.baseBlobSha ? 'Update' : 'Add'} ${meta.documentPath}`
 	const title = cleanText(payload.title, defaultTitle, 160)
 	const description = cleanText(
@@ -1219,19 +1158,16 @@ async function updateSessionSettings(
 	env: AppEnv,
 	sessionId: string,
 	state: SessionState,
-	user: GitHubUser | null,
+	user: GitHubUser,
 ): Promise<Response> {
 	if (request.method !== 'PATCH') throw new ApiError('Method not allowed', 405)
-	if (state.meta.demo) {
-		throw new ApiError('Demo session settings cannot be changed', 400)
-	}
-	if (!user || state.meta.createdBy.id !== user.id) {
+	if (state.meta.createdBy.id !== user.id) {
 		throw new ApiError('Only the session creator can change sharing settings', 403)
 	}
-	const payload = (await request.json()) as {
+	const payload = await readJsonBody<{
 		accessPolicy?: unknown
 		retentionDays?: unknown
-	}
+	}>(request, MAX_JSON_BODY_BYTES)
 	const accessPolicy =
 		payload.accessPolicy === 'write'
 			? 'write'
@@ -1322,7 +1258,7 @@ function hexBytes(value: string): Uint8Array | null {
 async function verifyWebhookSignature(
 	secret: string,
 	signatureHeader: string | null,
-	body: ArrayBuffer,
+	body: Uint8Array,
 ): Promise<boolean> {
 	if (!signatureHeader?.startsWith('sha256=')) return false
 	const actual = hexBytes(signatureHeader.slice('sha256='.length))
@@ -1353,7 +1289,7 @@ async function handleGitHubWebhook(
 	if (!env.GITHUB_WEBHOOK_SECRET) {
 		throw new ApiError('GitHub webhook secret is not configured', 503)
 	}
-	const body = await request.arrayBuffer()
+	const body = await readRequestBody(request, MAX_WEBHOOK_BODY_BYTES)
 	if (
 		!(await verifyWebhookSignature(
 			env.GITHUB_WEBHOOK_SECRET,
@@ -1366,7 +1302,7 @@ async function handleGitHubWebhook(
 	if (request.headers.get('X-GitHub-Event') !== 'pull_request') {
 		return Response.json({ ok: true, ignored: true })
 	}
-	const payload = JSON.parse(new TextDecoder().decode(body)) as {
+	let payload: {
 		action?: string
 		pull_request?: {
 			number?: number
@@ -1375,6 +1311,11 @@ async function handleGitHubWebhook(
 		repository?: {
 			full_name?: string
 		}
+	}
+	try {
+		payload = JSON.parse(new TextDecoder().decode(body)) as typeof payload
+	} catch {
+		throw new ApiError('Invalid GitHub webhook JSON', 400)
 	}
 	if (
 		payload.action !== 'closed' ||
@@ -1425,7 +1366,6 @@ async function handleSessionRoute(
 	if (!action && request.method === 'DELETE') {
 		if (
 			state.meta.createdBy.id === null ||
-			!user ||
 			state.meta.createdBy.id !== user.id
 		) {
 			throw new ApiError('Only the session creator can delete this session', 403)
@@ -1444,19 +1384,18 @@ async function handleSessionRoute(
 	if (action === 'connect') {
 		const url = new URL(request.url)
 		const clientId = url.searchParams.get('clientId')
-		const headers = new Headers(request.headers)
-		if (user) {
-			headers.set('X-User-Id', String(user.id))
-			headers.set('X-User-Login', user.login)
-			headers.set('X-User-Name', cleanText(user.name, user.login, 100))
-			headers.set('X-User-Avatar', user.avatar_url)
-			if (access.commitEmail) headers.set('X-User-Email', access.commitEmail)
-			headers.set('X-User-Can-Write', String(access.canWrite))
-		} else {
-			const guestName = cleanText(url.searchParams.get('name'), 'Guest editor', 50)
-			headers.set('X-User-Login', `guest-${clientId}`)
-			headers.set('X-User-Name', guestName)
+		if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+			throw new ApiError('Expected a WebSocket upgrade', 426)
 		}
+		const headers = new Headers({
+			Upgrade: 'websocket',
+			'X-User-Id': String(user.id),
+			'X-User-Login': user.login,
+			'X-User-Name': cleanText(user.name, user.login, 100),
+			'X-User-Avatar': user.avatar_url,
+			'X-User-Can-Write': String(access.canWrite),
+		})
+		if (access.commitEmail) headers.set('X-User-Email', access.commitEmail)
 		return sessionStub(env, sessionId).fetch(
 			new Request(`https://session/connect?clientId=${encodeURIComponent(clientId ?? '')}`, {
 				headers,

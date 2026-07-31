@@ -1,11 +1,11 @@
 import { App } from 'octokit'
 import {
-	ApiError,
 	arrayBufferToBase64,
 	encodeGitHubPath,
 	githubNoReplyEmail,
 	githubRequest,
 } from './github.js'
+import { ApiError } from './http.js'
 import type { AppEnv, SessionExport } from './types.js'
 
 type GitHubRef = {
@@ -94,8 +94,8 @@ export async function archiveExpiredSession(
 	session: SessionExport,
 ): Promise<{ branch: string; branchUrl: string; commitSha: string }> {
 	const { meta } = session
-	if (meta.demo || !meta.repository || !meta.baseBranch) {
-		throw new ApiError('Demo sessions do not have a GitHub archive branch', 400)
+	if (!meta.repository || !meta.baseBranch) {
+		throw new ApiError('The session does not have a GitHub archive branch', 400)
 	}
 	const token = await installationToken(env, meta.repository)
 	const continuePullRequest =

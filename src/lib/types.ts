@@ -26,7 +26,6 @@ export type SessionRetentionDays = 7 | 14 | 21 | 28
 
 export type SessionMeta = {
 	id: string
-	demo: boolean
 	repository: string | null
 	baseBranch: string | null
 	documentPath: string
