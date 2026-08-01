@@ -51,10 +51,7 @@
 			"binding": "ASSET_BUCKET",
 			"bucket_name": "github-live-md-assets"
 		}
-	],
-	"vars": {
-		"PNPM_VERSION": "11.18.0"
-	}
+	]
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
