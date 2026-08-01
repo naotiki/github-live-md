@@ -17,6 +17,7 @@ import {
 	ImagePlus,
 	Images,
 	Italic,
+	Keyboard,
 	Link2,
 	List,
 	LoaderCircle,
@@ -110,6 +111,10 @@ function storedWorkspaceMode(): WorkspaceMode {
 	return stored === 'editor' || stored === 'preview' || stored === 'split'
 		? stored
 		: 'split'
+}
+
+function storedVimMode(): boolean {
+	return localStorage.getItem('livemd.vimMode') === 'true'
 }
 
 function formatBytes(bytes: number): string {
@@ -246,6 +251,7 @@ function EditorWorkspace({
 		useState<EditorColorScheme>(storedEditorColorScheme)
 	const [workspaceMode, setWorkspaceMode] =
 		useState<WorkspaceMode>(storedWorkspaceMode)
+	const [vimMode, setVimMode] = useState(storedVimMode)
 	const [publishOpen, setPublishOpen] = useState(false)
 	const [publishResult, setPublishResult] = useState<PublishResult | null>(
 		meta.pullRequestUrl
@@ -353,6 +359,10 @@ function EditorWorkspace({
 	useEffect(() => {
 		localStorage.setItem('livemd.workspaceMode', workspaceMode)
 	}, [workspaceMode])
+
+	useEffect(() => {
+		localStorage.setItem('livemd.vimMode', String(vimMode))
+	}, [vimMode])
 
 	useEffect(() => {
 		const updatePresence = () => {
@@ -621,6 +631,16 @@ function EditorWorkspace({
 					/>
 				</div>
 				<div className="workspace-view-controls">
+					<button
+						type="button"
+						className={`vim-mode-toggle${vimMode ? ' active' : ''}`}
+						aria-pressed={vimMode}
+						title={vimMode ? 'Vim modeを無効にする' : 'Vim modeを有効にする'}
+						onClick={() => setVimMode((enabled) => !enabled)}
+					>
+						<Keyboard size={14} />
+						<span>Vim</span>
+					</button>
 					<label className="editor-scheme-select" title="エディタのカラースキーマ">
 						<Palette size={14} />
 						<select
@@ -711,6 +731,7 @@ function EditorWorkspace({
 						onScrollProgress={syncPreviewFromEditor}
 						onDocumentLimitExceeded={showDocumentLimit}
 						colorScheme={editorColorScheme}
+						vimMode={vimMode}
 					/>
 					<EditorToc
 						headings={previewHeadings}

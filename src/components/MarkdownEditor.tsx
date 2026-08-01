@@ -3,6 +3,7 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
+import { vim } from '@replit/codemirror-vim'
 import { basicSetup } from 'codemirror'
 import {
 	forwardRef,
@@ -32,6 +33,7 @@ type MarkdownEditorProps = {
 	onScrollProgress?: (progress: number) => void
 	onDocumentLimitExceeded?: () => void
 	colorScheme: EditorColorScheme
+	vimMode: boolean
 }
 
 type EditorPalette = {
@@ -58,10 +60,10 @@ const EDITOR_PALETTES: Record<EditorColorScheme, EditorPalette> = {
 		foreground: '#e8eee4',
 		gutter: '#111510',
 		gutterText: '#64705f',
-		activeLine: '#1a2018',
+		activeLine: '#b7f36b12',
 		activeGutter: '#93a58b',
 		accent: '#b7f36b',
-		selection: '#3f5d2d',
+		selection: '#456b2d',
 		heading: '#b7f36b',
 		link: '#65d9ff',
 		code: '#e7c46a',
@@ -74,7 +76,7 @@ const EDITOR_PALETTES: Record<EditorColorScheme, EditorPalette> = {
 		foreground: '#c9d1d9',
 		gutter: '#0d1117',
 		gutterText: '#6e7681',
-		activeLine: '#161b22',
+		activeLine: '#6e768119',
 		activeGutter: '#8b949e',
 		accent: '#58a6ff',
 		selection: '#264f78',
@@ -90,7 +92,7 @@ const EDITOR_PALETTES: Record<EditorColorScheme, EditorPalette> = {
 		foreground: '#24292f',
 		gutter: '#f6f8fa',
 		gutterText: '#8c959f',
-		activeLine: '#f6f8fa',
+		activeLine: '#afb8c133',
 		activeGutter: '#57606a',
 		accent: '#0969da',
 		selection: '#b6d7ff',
@@ -106,7 +108,7 @@ const EDITOR_PALETTES: Record<EditorColorScheme, EditorPalette> = {
 		foreground: '#93a1a1',
 		gutter: '#002b36',
 		gutterText: '#586e75',
-		activeLine: '#073642',
+		activeLine: '#83949614',
 		activeGutter: '#839496',
 		accent: '#2aa198',
 		selection: '#164e59',
@@ -150,8 +152,16 @@ function editorExtensions(colorScheme: EditorColorScheme) {
 					backgroundColor: palette.activeLine,
 					color: palette.activeGutter,
 				},
-				'.cm-selectionBackground, ::selection': {
+				'&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
 					backgroundColor: `${palette.selection} !important`,
+					boxShadow: `inset 0 0 0 1px ${palette.accent}66`,
+				},
+				'.cm-content ::selection': {
+					backgroundColor: palette.selection,
+					color: palette.foreground,
+				},
+				'&:not(.cm-focused) .cm-selectionBackground': {
+					backgroundColor: `${palette.selection}aa`,
 				},
 				'.cm-cursor, .cm-dropCursor': {
 					borderLeftColor: palette.accent,
@@ -170,6 +180,22 @@ function editorExtensions(colorScheme: EditorColorScheme) {
 					color: palette.foreground,
 					backgroundColor: palette.gutter,
 					borderColor: palette.punctuation,
+				},
+				'.cm-vim-panel': {
+					minHeight: '24px',
+					padding: '3px 9px',
+					color: palette.foreground,
+					backgroundColor: palette.gutter,
+					borderTop: `1px solid ${palette.punctuation}55`,
+					fontFamily: "'Noto Sans Mono', monospace",
+					fontSize: '11px',
+					lineHeight: '18px',
+				},
+				'.cm-vim-panel input': {
+					color: palette.foreground,
+					backgroundColor: palette.activeLine,
+					border: `1px solid ${palette.punctuation}`,
+					outline: 'none',
 				},
 			},
 			{ dark: palette.dark },
@@ -217,13 +243,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 			onScrollProgress,
 			onDocumentLimitExceeded,
 			colorScheme,
+			vimMode,
 		},
 		ref,
 	) {
 		const parentRef = useRef<HTMLDivElement>(null)
 		const viewRef = useRef<EditorView | null>(null)
 		const themeCompartmentRef = useRef(new Compartment())
+		const vimCompartmentRef = useRef(new Compartment())
 		const initialColorSchemeRef = useRef(colorScheme)
+		const initialVimModeRef = useRef(vimMode)
 
 		useEffect(() => {
 			if (!parentRef.current) return
@@ -232,6 +261,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 			const state = EditorState.create({
 				doc: text.toString(),
 				extensions: [
+					vimCompartmentRef.current.of(
+						initialVimModeRef.current ? vim({ status: true }) : [],
+					),
 					basicSetup,
 					markdown(),
 					EditorView.lineWrapping,
@@ -316,6 +348,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 				),
 			})
 		}, [colorScheme])
+
+		useEffect(() => {
+			const view = viewRef.current
+			if (!view) return
+			view.dispatch({
+				effects: vimCompartmentRef.current.reconfigure(
+					vimMode ? vim({ status: true }) : [],
+				),
+			})
+			view.focus()
+		}, [vimMode])
 
 		useImperativeHandle(
 			ref,

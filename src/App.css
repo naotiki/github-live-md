@@ -1512,6 +1512,31 @@
 	margin-left: auto;
 }
 
+.vim-mode-toggle {
+	height: 29px;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 0 8px;
+	color: #899684;
+	background: #121711;
+	border: 1px solid #30382d;
+	border-radius: 6px;
+	font-size: 10px;
+	font-weight: 750;
+}
+
+.vim-mode-toggle:hover {
+	color: #dce6d7;
+	border-color: #526149;
+}
+
+.vim-mode-toggle.active {
+	color: #172014;
+	background: #b7f36b;
+	border-color: #b7f36b;
+}
+
 .editor-scheme-select {
 	height: 29px;
 	display: flex;
@@ -3674,6 +3699,16 @@
 		width: 31px;
 		padding: 0;
 		justify-content: center;
+	}
+
+	.vim-mode-toggle {
+		width: 31px;
+		justify-content: center;
+		padding: 0;
+	}
+
+	.vim-mode-toggle span {
+		display: none;
 	}
 
 	.editor-scheme-select select {
