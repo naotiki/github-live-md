@@ -14,6 +14,7 @@ export type MarkdownHeading = {
 
 export type MarkdownPreviewDocument = {
 	body: string
+	bodyOffset: number
 	frontmatter: FrontmatterEntry[]
 	frontmatterError?: string
 	headings: MarkdownHeading[]
@@ -175,6 +176,7 @@ export function parseMarkdownDocument(markdown: string): MarkdownPreviewDocument
 
 	return {
 		body,
+		bodyOffset,
 		frontmatter,
 		frontmatterError,
 		headings: extractHeadings(body, bodyOffset),

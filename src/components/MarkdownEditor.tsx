@@ -21,7 +21,7 @@ export type MarkdownEditorHandle = {
 	wrapSelection: (before: string, after?: string) => void
 	insertText: (text: string) => void
 	scrollToPosition: (position: number) => void
-	scrollToProgress: (progress: number) => boolean
+	scrollToSourcePosition: (position: number) => boolean
 	focus: () => void
 }
 
@@ -30,7 +30,7 @@ type MarkdownEditorProps = {
 	awareness: awarenessProtocol.Awareness
 	readOnly?: boolean
 	onPasteImages?: (files: File[]) => void
-	onScrollProgress?: (progress: number) => void
+	onScrollPosition?: (position: number) => void
 	onDocumentLimitExceeded?: () => void
 	colorScheme: EditorColorScheme
 	vimMode: boolean
@@ -240,7 +240,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 			awareness,
 			readOnly = false,
 			onPasteImages,
-			onScrollProgress,
+			onScrollPosition,
 			onDocumentLimitExceeded,
 			colorScheme,
 			vimMode,
@@ -313,10 +313,23 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 			const reportScroll = () => {
 				window.cancelAnimationFrame(scrollFrame)
 				scrollFrame = window.requestAnimationFrame(() => {
-					const maximum =
-						view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight
-					onScrollProgress?.(
-						maximum > 0 ? view.scrollDOM.scrollTop / maximum : 0,
+					const viewportTop =
+						view.scrollDOM.getBoundingClientRect().top +
+						view.scrollDOM.clientTop
+					const visibleHeight = Math.max(0, viewportTop - view.documentTop)
+					const block = view.lineBlockAtHeight(visibleHeight)
+					const blockProgress =
+						block.height > 0
+							? Math.max(
+									0,
+									Math.min((visibleHeight - block.top) / block.height, 1),
+								)
+							: 0
+					const position = Math.round(
+						block.from + (block.to - block.from) * blockProgress,
+					)
+					onScrollPosition?.(
+						Math.max(0, Math.min(position, view.state.doc.length)),
 					)
 				})
 			}
@@ -334,7 +347,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 			awareness,
 			onDocumentLimitExceeded,
 			onPasteImages,
-			onScrollProgress,
+			onScrollPosition,
 			readOnly,
 			text,
 		])
@@ -401,13 +414,32 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 						}),
 					})
 				},
-				scrollToProgress(progress: number) {
+				scrollToSourcePosition(position: number) {
 					const view = viewRef.current
 					if (!view) return false
+					const targetPosition = Math.max(
+						0,
+						Math.min(position, view.state.doc.length),
+					)
+					const block = view.lineBlockAt(targetPosition)
+					const blockProgress =
+						block.to > block.from
+							? (targetPosition - block.from) / (block.to - block.from)
+							: 0
+					const targetHeight = block.top + block.height * blockProgress
+					const viewportTop =
+						view.scrollDOM.getBoundingClientRect().top +
+						view.scrollDOM.clientTop
+					const visibleHeight = Math.max(0, viewportTop - view.documentTop)
 					const maximum =
 						view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight
-					const target =
-						Math.max(0, Math.min(progress, 1)) * Math.max(maximum, 0)
+					const target = Math.max(
+						0,
+						Math.min(
+							view.scrollDOM.scrollTop + targetHeight - visibleHeight,
+							Math.max(maximum, 0),
+						),
+					)
 					if (Math.abs(view.scrollDOM.scrollTop - target) < 0.5) {
 						return false
 					}

@@ -16,6 +16,29 @@ type MarkdownPreviewProps = {
 	assets: PendingAsset[]
 }
 
+type PositionedNode = {
+	position?: {
+		start?: { offset?: number }
+		end?: { offset?: number }
+	}
+}
+
+function sourcePositionAttributes(
+	node: PositionedNode | undefined,
+	bodyOffset: number,
+) {
+	const start = node?.position?.start?.offset
+	const end = node?.position?.end?.offset
+	return {
+		...(typeof start === 'number'
+			? { 'data-source-start': bodyOffset + start }
+			: {}),
+		...(typeof end === 'number'
+			? { 'data-source-end': bodyOffset + end }
+			: {}),
+	}
+}
+
 function normalizePath(path: string): string {
 	const parts: string[] = []
 	for (const part of path.split('/')) {
@@ -177,7 +200,11 @@ export function MarkdownPreview({ markdown, meta, assets }: MarkdownPreviewProps
 	return (
 		<article className="markdown-preview">
 			{document.frontmatter.length > 0 && (
-				<section className="frontmatter-card" aria-label="Frontmatter">
+				<section
+					className="frontmatter-card"
+					aria-label="Frontmatter"
+					data-source-start={0}
+				>
 					<table className="frontmatter-table">
 						<tbody>
 							{document.frontmatter.map(({ key, value }) => (
@@ -191,7 +218,11 @@ export function MarkdownPreview({ markdown, meta, assets }: MarkdownPreviewProps
 				</section>
 			)}
 			{document.frontmatterError && (
-				<div className="frontmatter-error" role="status">
+				<div
+					className="frontmatter-error"
+					role="status"
+					data-source-start={0}
+				>
 					<strong>Frontmatterを解析できません</strong>
 					<span>{document.frontmatterError}</span>
 				</div>
@@ -199,15 +230,73 @@ export function MarkdownPreview({ markdown, meta, assets }: MarkdownPreviewProps
 			<ReactMarkdown
 				remarkPlugins={[remarkFrontmatter, remarkGfm, remarkHeadingIds]}
 				components={{
-					a: ({ children, href }) => (
-						<a href={href} target="_blank" rel="noreferrer">
+					h1: ({ node, children, ...props }) => (
+						<h1 {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</h1>
+					),
+					h2: ({ node, children, ...props }) => (
+						<h2 {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</h2>
+					),
+					h3: ({ node, children, ...props }) => (
+						<h3 {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</h3>
+					),
+					h4: ({ node, children, ...props }) => (
+						<h4 {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</h4>
+					),
+					h5: ({ node, children, ...props }) => (
+						<h5 {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</h5>
+					),
+					h6: ({ node, children, ...props }) => (
+						<h6 {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</h6>
+					),
+					p: ({ node, children, ...props }) => (
+						<p {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</p>
+					),
+					li: ({ node, children, ...props }) => (
+						<li {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</li>
+					),
+					pre: ({ node, children, ...props }) => (
+						<pre {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</pre>
+					),
+					table: ({ node, children, ...props }) => (
+						<table {...props} {...sourcePositionAttributes(node, document.bodyOffset)}>
+							{children}
+						</table>
+					),
+					hr: ({ node, ...props }) => (
+						<hr {...props} {...sourcePositionAttributes(node, document.bodyOffset)} />
+					),
+					a: ({ node: _node, children, href, ...props }) => (
+						<a {...props} href={href} target="_blank" rel="noreferrer">
 							{children}
 						</a>
 					),
-					img: ({ alt, src }) => (
-						<img alt={alt ?? ''} src={resolveImage(src)} loading="lazy" />
+					img: ({ node: _node, alt, src, ...props }) => (
+						<img
+							{...props}
+							alt={alt ?? ''}
+							src={resolveImage(src)}
+							loading="lazy"
+						/>
 					),
-					input: (props) => <input {...props} disabled />,
+					input: ({ node: _node, ...props }) => <input {...props} disabled />,
 				}}
 			>
 				{document.body}

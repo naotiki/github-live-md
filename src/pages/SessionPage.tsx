@@ -38,6 +38,7 @@ import {
 import {
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -65,6 +66,12 @@ import {
 	type EditorColorScheme,
 } from '../lib/editorColorSchemes'
 import { parseMarkdownDocument } from '../lib/markdown'
+import {
+	normalizeScrollAnchors,
+	scrollTopToSourcePosition,
+	sourcePositionToScrollTop,
+	type ScrollAnchor,
+} from '../lib/scrollSync'
 import type {
 	AuthStatus,
 	PendingAsset,
@@ -151,6 +158,36 @@ function relativeAssetDirectory(
 	return relative.startsWith('.') ? relative : `./${relative}`
 }
 
+function collectPreviewScrollAnchors(
+	preview: HTMLDivElement,
+	documentLength: number,
+): ScrollAnchor[] {
+	const previewBounds = preview.getBoundingClientRect()
+	const maximumScrollTop = Math.max(
+		0,
+		preview.scrollHeight - preview.clientHeight,
+	)
+	const anchors: ScrollAnchor[] = []
+
+	for (const element of preview.querySelectorAll<HTMLElement>(
+		'[data-source-start]',
+	)) {
+		const bounds = element.getBoundingClientRect()
+		const top = bounds.top - previewBounds.top + preview.scrollTop
+		const bottom = bounds.bottom - previewBounds.top + preview.scrollTop
+		const start = Number(element.dataset.sourceStart)
+		const end = Number(element.dataset.sourceEnd)
+		if (Number.isFinite(start)) anchors.push({ source: start, top })
+		if (Number.isFinite(end)) anchors.push({ source: end, top: bottom })
+	}
+
+	return normalizeScrollAnchors(
+		anchors,
+		documentLength,
+		maximumScrollTop,
+	)
+}
+
 export function SessionPage({ sessionId, auth, onEmailSettings }: SessionPageProps) {
 	const [session, setSession] = useState<SessionState | null>(null)
 	const [loading, setLoading] = useState(true)
@@ -231,6 +268,10 @@ function EditorWorkspace({
 	const previewScrollRef = useRef<HTMLDivElement>(null)
 	const pendingEditorScrollRef = useRef<number | null>(null)
 	const pendingPreviewScrollRef = useRef<number | null>(null)
+	const previewAnchorsRef = useRef<ScrollAnchor[]>([])
+	const lastScrollSourceRef = useRef<'editor' | 'preview'>('editor')
+	const lastSourcePositionRef = useRef(0)
+	const previewScrollFrameRef = useRef(0)
 	const [meta, setMeta] = useState(initialSession.meta)
 	const [markdown, setMarkdown] = useState('')
 	const [assets, setAssets] = useState<PendingAsset[]>(
@@ -385,46 +426,118 @@ function EditorWorkspace({
 		[],
 	)
 
+	const rebuildPreviewAnchors = useCallback(() => {
+		const preview = previewScrollRef.current
+		if (!preview) return []
+		const anchors = collectPreviewScrollAnchors(preview, markdown.length)
+		previewAnchorsRef.current = anchors
+		return anchors
+	}, [markdown.length])
+
+	const resyncAfterPreviewLayout = useCallback(() => {
+		const preview = previewScrollRef.current
+		if (!preview) return
+		const anchors = rebuildPreviewAnchors()
+		if (!bothPanesVisible() || anchors.length === 0) return
+
+		const target = sourcePositionToScrollTop(
+			lastSourcePositionRef.current,
+			anchors,
+		)
+		if (Math.abs(preview.scrollTop - target) >= 0.5) {
+			pendingPreviewScrollRef.current = target
+			preview.scrollTop = target
+		}
+
+		if (lastScrollSourceRef.current === 'preview') {
+			pendingEditorScrollRef.current = lastSourcePositionRef.current
+			const changed = editorRef.current?.scrollToSourcePosition(
+				lastSourcePositionRef.current,
+			)
+			if (!changed) pendingEditorScrollRef.current = null
+		}
+	}, [bothPanesVisible, rebuildPreviewAnchors])
+
+	useLayoutEffect(() => {
+		resyncAfterPreviewLayout()
+	}, [assets, markdown, mobilePane, resyncAfterPreviewLayout, workspaceMode])
+
+	useEffect(() => {
+		const preview = previewScrollRef.current
+		if (!preview || typeof ResizeObserver === 'undefined') return
+		let frame = 0
+		const observer = new ResizeObserver(() => {
+			window.cancelAnimationFrame(frame)
+			frame = window.requestAnimationFrame(resyncAfterPreviewLayout)
+		})
+		observer.observe(preview)
+		const article = preview.querySelector('.markdown-preview')
+		if (article) observer.observe(article)
+		return () => {
+			window.cancelAnimationFrame(frame)
+			observer.disconnect()
+		}
+	}, [resyncAfterPreviewLayout])
+
+	useEffect(
+		() => () => window.cancelAnimationFrame(previewScrollFrameRef.current),
+		[],
+	)
+
 	const syncPreviewFromEditor = useCallback(
-		(progress: number) => {
-			if (!bothPanesVisible()) return
-			const pending = pendingEditorScrollRef.current
-			if (pending !== null && Math.abs(progress - pending) < 0.015) {
-				pendingEditorScrollRef.current = null
-				return
+		(position: number) => {
+			const panesVisible = bothPanesVisible()
+			if (panesVisible) {
+				const pending = pendingEditorScrollRef.current
+				if (pending !== null && Math.abs(position - pending) < 8) {
+					pendingEditorScrollRef.current = null
+					return
+				}
 			}
 			pendingEditorScrollRef.current = null
+			lastScrollSourceRef.current = 'editor'
+			lastSourcePositionRef.current = position
+			if (!panesVisible) return
 
 			const preview = previewScrollRef.current
 			if (!preview) return
-			const maximum = preview.scrollHeight - preview.clientHeight
-			const target = Math.max(0, Math.min(progress, 1))
-			const current = maximum > 0 ? preview.scrollTop / maximum : 0
-			if (Math.abs(current - target) < 0.001) {
+			const anchors = previewAnchorsRef.current
+			if (anchors.length === 0) return
+			const target = sourcePositionToScrollTop(position, anchors)
+			if (Math.abs(preview.scrollTop - target) < 0.5) {
 				pendingPreviewScrollRef.current = null
 				return
 			}
 			pendingPreviewScrollRef.current = target
-			preview.scrollTop = target * Math.max(maximum, 0)
+			preview.scrollTop = target
 		},
 		[bothPanesVisible],
 	)
 
 	const syncEditorFromPreview = useCallback(() => {
-		if (!bothPanesVisible()) return
-		const preview = previewScrollRef.current
-		if (!preview) return
-		const maximum = preview.scrollHeight - preview.clientHeight
-		const progress = maximum > 0 ? preview.scrollTop / maximum : 0
-		const pending = pendingPreviewScrollRef.current
-		if (pending !== null && Math.abs(progress - pending) < 0.015) {
+		window.cancelAnimationFrame(previewScrollFrameRef.current)
+		previewScrollFrameRef.current = window.requestAnimationFrame(() => {
+			const preview = previewScrollRef.current
+			if (!preview) return
+			const panesVisible = bothPanesVisible()
+			if (panesVisible) {
+				const pending = pendingPreviewScrollRef.current
+				if (pending !== null && Math.abs(preview.scrollTop - pending) < 1) {
+					pendingPreviewScrollRef.current = null
+					return
+				}
+			}
 			pendingPreviewScrollRef.current = null
-			return
-		}
-		pendingPreviewScrollRef.current = null
-		pendingEditorScrollRef.current = progress
-		const changed = editorRef.current?.scrollToProgress(progress)
-		if (!changed) pendingEditorScrollRef.current = null
+			const anchors = previewAnchorsRef.current
+			if (anchors.length === 0) return
+			const position = scrollTopToSourcePosition(preview.scrollTop, anchors)
+			lastScrollSourceRef.current = 'preview'
+			lastSourcePositionRef.current = position
+			if (!panesVisible) return
+			pendingEditorScrollRef.current = position
+			const changed = editorRef.current?.scrollToSourcePosition(position)
+			if (!changed) pendingEditorScrollRef.current = null
+		})
 	}, [bothPanesVisible])
 
 	const showDocumentLimit = useCallback(() => {
@@ -728,7 +841,7 @@ function EditorWorkspace({
 						awareness={awareness}
 						readOnly={readOnly}
 						onPasteImages={uploadImages}
-						onScrollProgress={syncPreviewFromEditor}
+						onScrollPosition={syncPreviewFromEditor}
 						onDocumentLimitExceeded={showDocumentLimit}
 						colorScheme={editorColorScheme}
 						vimMode={vimMode}
